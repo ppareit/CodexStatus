@@ -1,0 +1,7 @@
+{
+  "uuid": "codex-status@ppareit.local",
+  "name": "Codex Status",
+  "description": "Show Codex activity and remaining usage limits in the GNOME top bar.",
+  "shell-version": ["49"],
+  "url": "https://example.invalid/codex-status"
+}

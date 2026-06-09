@@ -1,0 +1,78 @@
+.codex-status-box {
+  spacing: 6px;
+}
+
+.codex-status-active {
+  color: #8ff0a4;
+}
+
+.codex-status-error {
+  color: #ffbe6f;
+}
+
+.codex-panel-limits {
+  spacing: 2px;
+}
+
+.codex-panel-limit-bar {
+  background-color: rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  height: 3px;
+  width: 34px;
+}
+
+.codex-panel-limit-fill {
+  border-radius: 999px;
+  height: 3px;
+}
+
+.codex-limit-row {
+  spacing: 4px;
+  min-width: 210px;
+}
+
+.codex-limit-header {
+  spacing: 12px;
+}
+
+.codex-limit-name {
+  font-weight: 600;
+}
+
+.codex-limit-percent {
+  min-width: 44px;
+  text-align: right;
+}
+
+.codex-limit-reset {
+  color: #c0bfbc;
+  font-size: 0.85em;
+}
+
+.codex-limit-bar {
+  background-color: rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  height: 7px;
+  width: 180px;
+}
+
+.codex-limit-fill {
+  border-radius: 999px;
+  height: 7px;
+}
+
+.codex-limit-fill-ok {
+  background-color: #8ff0a4;
+}
+
+.codex-limit-fill-warning {
+  background-color: #f6d32d;
+}
+
+.codex-limit-fill-danger {
+  background-color: #ff7b63;
+}
+
+.codex-limit-fill-unknown {
+  background-color: #77767b;
+}
