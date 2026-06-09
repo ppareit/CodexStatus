@@ -3,5 +3,5 @@
   "name": "Codex Status",
   "description": "Show Codex activity and remaining usage limits in the GNOME top bar.",
   "shell-version": ["49"],
-  "url": "https://example.invalid/codex-status"
+  "url": "https://github.com/ppareit/CodexStatus"
 }
