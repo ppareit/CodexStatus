@@ -8,6 +8,10 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 const REFRESH_SECONDS = 5;
+const SESSION_CHANGE_DEBOUNCE_MS = 250;
+const STARTUP_CODEX_REFRESH_DELAY_SECONDS = 10;
+const STARTUP_CODEX_REFRESH_TIMEOUT_SECONDS = 90;
+const STARTUP_CODEX_REFRESH_PROMPT = 'Antwoord alleen met OK.';
 const CODEX_SESSIONS_DIR = GLib.build_filenamev([
     GLib.get_home_dir(),
     '.codex',
@@ -16,6 +20,24 @@ const CODEX_SESSIONS_DIR = GLib.build_filenamev([
 const MAX_RATE_LIMIT_FILES = 10;
 const PANEL_LIMIT_BAR_WIDTH = 34;
 const MENU_LIMIT_BAR_WIDTH = 180;
+
+function _findCodexExecutable() {
+    const path = GLib.find_program_in_path('codex');
+    if (path)
+        return path;
+
+    const localPath = GLib.build_filenamev([
+        GLib.get_home_dir(),
+        '.local',
+        'bin',
+        'codex',
+    ]);
+
+    if (GLib.file_test(localPath, GLib.FileTest.IS_EXECUTABLE))
+        return localPath;
+
+    return null;
+}
 
 function _remainingPercent(limit) {
     const value = limit?.used_percent;
@@ -232,7 +254,12 @@ export class CodexStatusIndicator extends PanelMenu.Button {
         super(0.5, 'Codex Status');
 
         this._refreshSource = 0;
+        this._queuedRefreshSource = 0;
+        this._startupCodexRefreshSource = 0;
+        this._startupCodexTimeoutSource = 0;
+        this._startupCodexProc = null;
         this._refreshInFlight = false;
+        this._sessionMonitors = new Map();
         this._processes = [];
         this._rateLimits = null;
 
@@ -284,6 +311,7 @@ export class CodexStatusIndicator extends PanelMenu.Button {
         this._processSection = new PopupMenu.PopupMenuSection();
         this.menu.addMenuItem(this._processSection);
 
+        this._syncSessionMonitors();
         this._refresh();
         this._refreshSource = GLib.timeout_add_seconds(
             GLib.PRIORITY_DEFAULT,
@@ -292,6 +320,150 @@ export class CodexStatusIndicator extends PanelMenu.Button {
                 this._refresh();
                 return GLib.SOURCE_CONTINUE;
             });
+        this._queueStartupCodexRefresh();
+    }
+
+    _queueRefresh() {
+        if (this._queuedRefreshSource)
+            return;
+
+        this._queuedRefreshSource = GLib.timeout_add(
+            GLib.PRIORITY_DEFAULT,
+            SESSION_CHANGE_DEBOUNCE_MS,
+            () => {
+                this._queuedRefreshSource = 0;
+                this._syncSessionMonitors();
+                this._refresh();
+                return GLib.SOURCE_REMOVE;
+            });
+    }
+
+    _syncSessionMonitors() {
+        for (const directory of this._collectSessionDirectories())
+            this._monitorSessionDirectory(directory);
+    }
+
+    _collectSessionDirectories(directory = CODEX_SESSIONS_DIR, directories = []) {
+        const file = Gio.File.new_for_path(directory);
+        let enumerator;
+
+        try {
+            enumerator = file.enumerate_children(
+                'standard::name,standard::type',
+                Gio.FileQueryInfoFlags.NONE,
+                null);
+        } catch {
+            return directories;
+        }
+
+        directories.push(directory);
+
+        let info;
+        while ((info = enumerator.next_file(null)) !== null) {
+            if (info.get_file_type() !== Gio.FileType.DIRECTORY)
+                continue;
+
+            const child = GLib.build_filenamev([directory, info.get_name()]);
+            this._collectSessionDirectories(child, directories);
+        }
+
+        enumerator.close(null);
+        return directories;
+    }
+
+    _monitorSessionDirectory(directory) {
+        if (this._sessionMonitors.has(directory))
+            return;
+
+        const file = Gio.File.new_for_path(directory);
+        let monitor;
+
+        try {
+            monitor = file.monitor_directory(Gio.FileMonitorFlags.NONE, null);
+        } catch {
+            return;
+        }
+
+        monitor.connect('changed', () => this._queueRefresh());
+        this._sessionMonitors.set(directory, monitor);
+    }
+
+    _queueStartupCodexRefresh() {
+        if (this._startupCodexRefreshSource)
+            return;
+
+        this._startupCodexRefreshSource = GLib.timeout_add_seconds(
+            GLib.PRIORITY_DEFAULT,
+            STARTUP_CODEX_REFRESH_DELAY_SECONDS,
+            () => {
+                this._startupCodexRefreshSource = 0;
+                this._runStartupCodexRefresh();
+                return GLib.SOURCE_REMOVE;
+            });
+    }
+
+    _runStartupCodexRefresh() {
+        if (this._startupCodexProc)
+            return;
+
+        const codexPath = _findCodexExecutable();
+        if (!codexPath) {
+            console.warn('Unable to refresh Codex limits at startup: codex executable not found');
+            return;
+        }
+
+        const proc = new Gio.Subprocess({
+            argv: [
+                codexPath,
+                'exec',
+                '--sandbox',
+                'read-only',
+                '--skip-git-repo-check',
+                '-C',
+                GLib.get_home_dir(),
+                STARTUP_CODEX_REFRESH_PROMPT,
+            ],
+            flags: Gio.SubprocessFlags.STDOUT_SILENCE |
+                Gio.SubprocessFlags.STDERR_SILENCE,
+        });
+
+        try {
+            proc.init(null);
+        } catch (error) {
+            console.warn(`Unable to refresh Codex limits at startup: ${error.message}`);
+            return;
+        }
+
+        this._startupCodexProc = proc;
+        this._startupCodexTimeoutSource = GLib.timeout_add_seconds(
+            GLib.PRIORITY_DEFAULT,
+            STARTUP_CODEX_REFRESH_TIMEOUT_SECONDS,
+            () => {
+                this._startupCodexTimeoutSource = 0;
+
+                if (this._startupCodexProc)
+                    this._startupCodexProc.force_exit();
+
+                return GLib.SOURCE_REMOVE;
+            });
+
+        proc.wait_check_async(null, (subprocess, result) => {
+            if (this._startupCodexTimeoutSource) {
+                GLib.source_remove(this._startupCodexTimeoutSource);
+                this._startupCodexTimeoutSource = 0;
+            }
+
+            this._startupCodexProc = null;
+
+            try {
+                subprocess.wait_check_finish(result);
+            } catch (error) {
+                console.warn(`Unable to refresh Codex limits at startup: ${error.message}`);
+            }
+
+            this._syncSessionMonitors();
+            this._refresh();
+        });
     }
 
     _setErrored(message) {
@@ -397,10 +569,35 @@ export class CodexStatusIndicator extends PanelMenu.Button {
     }
 
     _onDestroy() {
+        if (this._startupCodexRefreshSource) {
+            GLib.source_remove(this._startupCodexRefreshSource);
+            this._startupCodexRefreshSource = 0;
+        }
+
+        if (this._startupCodexTimeoutSource) {
+            GLib.source_remove(this._startupCodexTimeoutSource);
+            this._startupCodexTimeoutSource = 0;
+        }
+
+        if (this._startupCodexProc) {
+            this._startupCodexProc.force_exit();
+            this._startupCodexProc = null;
+        }
+
+        if (this._queuedRefreshSource) {
+            GLib.source_remove(this._queuedRefreshSource);
+            this._queuedRefreshSource = 0;
+        }
+
         if (this._refreshSource) {
             GLib.source_remove(this._refreshSource);
             this._refreshSource = 0;
         }
+
+        for (const monitor of this._sessionMonitors.values())
+            monitor.cancel();
+
+        this._sessionMonitors.clear();
 
         super._onDestroy();
     }
